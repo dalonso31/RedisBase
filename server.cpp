@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <vector>
+#include <stdbool.h>
 
 const size_t k_max_msg = 4096;
 
@@ -22,6 +23,12 @@ enum {
 
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
+}
+
+static void die(const char *msg) {
+    int err = errno;
+    fprintf(stderr, "[%d] %s\n", err, msg);
+    abort();
 }
 
 struct Conn {
@@ -53,37 +60,9 @@ static void fd_set_nb(int fd) {
     }
 }
 
-static void state_res(Conn *conn) {
-    while (try_flush_buffer(conn)) {}
-}
 
-static bool try_flush_buffer(Conn *conn) {
-    ssize_t rv = 0;
-    do {
-        size_t remain = conn->wbuf_size - conn->wbuf_sent;
-        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
-    } while (rv < 0 && errno == EINTR);
-    if (rv < 0 && errno == EAGAIN) {
-        // got EAGAIN, stop.
-        return false;
-    }
-    if (rv < 0) {
-        msg("write() error");
-        conn->state = STATE_END;
-        return false;
-    }
-    conn->wbuf_sent += (size_t)rv;
-    assert(conn->wbuf_sent <= conn->wbuf_size);
-    if (conn->wbuf_sent == conn->wbuf_size) {
-        // response was fully sent, change state back
-        conn->state = STATE_REQ;
-        conn->wbuf_sent = 0;
-        conn->wbuf_size = 0;
-        return false;
-    }
-    // still got some data in wbuf, could try to write again
-    return true;
-}
+static void state_req(Conn *conn);
+static void state_res(Conn *conn);
 
 static bool try_one_request(Conn *conn) {
     // try to parse a request from the buffer
@@ -128,10 +107,6 @@ static bool try_one_request(Conn *conn) {
     return (conn->state == STATE_REQ);
 }
 
-static void state_req(Conn *conn) {
-    while (try_fill_buffer(conn)) {}
-}
-
 static bool try_fill_buffer(Conn *conn) {
     // try to fill the buffer
     assert(conn->rbuf_size < sizeof(conn->rbuf));
@@ -166,6 +141,42 @@ static bool try_fill_buffer(Conn *conn) {
     // Why is there a loop? Please read the explanation of "pipelining".
     while (try_one_request(conn)) {}
     return (conn->state == STATE_REQ);
+}
+
+static bool try_flush_buffer(Conn *conn) {
+    ssize_t rv = 0;
+    do {
+        size_t remain = conn->wbuf_size - conn->wbuf_sent;
+        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+    } while (rv < 0 && errno == EINTR);
+    if (rv < 0 && errno == EAGAIN) {
+        // got EAGAIN, stop.
+        return false;
+    }
+    if (rv < 0) {
+        msg("write() error");
+        conn->state = STATE_END;
+        return false;
+    }
+    conn->wbuf_sent += (size_t)rv;
+    assert(conn->wbuf_sent <= conn->wbuf_size);
+    if (conn->wbuf_sent == conn->wbuf_size) {
+        // response was fully sent, change state back
+        conn->state = STATE_REQ;
+        conn->wbuf_sent = 0;
+        conn->wbuf_size = 0;
+        return false;
+    }
+    // still got some data in wbuf, could try to write again
+    return true;
+}
+
+static void state_res(Conn *conn) {
+    while (try_flush_buffer(conn)) {}
+}
+
+static void state_req(Conn *conn) {
+    while (try_fill_buffer(conn)) {}
 }
 
 static void connection_io(Conn *conn) {
@@ -210,43 +221,6 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
     conn->wbuf_sent = 0;
     conn_put(fd2conn, conn);
     return 0;
-}
-
-static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
-    // accept
-    struct sockaddr_in client_addr = {};
-    socklen_t socklen = sizeof(client_addr);
-    int connfd = accept(fd, (struct sockaddr *)&client_addr, &socklen);
-    if (connfd < 0) {
-        msg("accept() error");
-        return -1;  // error
-    }
-
-    // set the new connection fd to nonblocking mode
-    fd_set_nb(connfd);
-    // creating the struct Conn
-    struct Conn *conn = (struct Conn *)malloc(sizeof(struct Conn));
-    if (!conn) {
-        close(connfd);
-        return -1;
-    }
-    conn->fd = connfd;
-    conn->state = STATE_REQ;
-    conn->rbuf_size = 0;
-    conn->wbuf_size = 0;
-    conn->wbuf_sent = 0;
-    conn_put(fd2conn, conn);
-    return 0;
-}
-
-static void msg(const char *msg) {
-    fprintf(stderr, "%s\n", msg);
-}
-
-static void die(const char *msg) {
-    int err = errno;
-    fprintf(stderr, "[%d] %s\n", err, msg);
-    abort();
 }
 
 static int32_t read_full(int fd, char *buf, size_t n) {
