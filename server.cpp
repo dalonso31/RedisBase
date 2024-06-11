@@ -154,14 +154,14 @@ static int32_t do_request(
 
     if (cmd.size() == 2 && cmd_is(cmd[0],"get")){
         *rescode = do_get(cmd, res, reslen);
-    } else if (cmd.size() == 2 && cmd_is(cmd[0],"set")){
+    } else if (cmd.size() == 3 && cmd_is(cmd[0],"set")){
         *rescode = do_set(cmd, res, reslen);
     }else if (cmd.size() == 2 && cmd_is(cmd[0],"del")){
         *rescode = do_del(cmd, res, reslen);
     } else {
         // Send error response
         *rescode = RES_ERR;
-        const char *msg = "Unknown command";
+        const char *msg = "Unknown cmd";
         strcpy((char *)res, msg);
         *reslen = strlen(msg);
         return 0;
